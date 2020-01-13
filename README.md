@@ -1,3 +1,9 @@
+Update
+======
+
+This repo is abandoned as of mid-2017. The code at https://github.com/tensorflow/minigo is a continuation of the work here.
+
+
 MuGo: A minimalist Go engine modeled after AlphaGo
 ==================================================
 
@@ -75,3 +81,10 @@ gogui -size 19 -program "$TWOGTP" -computer-both -auto
 Another way to play via GTP is to connect to CGOS, the [Computer Go Online Server](http://yss-aya.com/cgos/). The CGOS server hosted by boardspace.net is actually abandoned; you'll want to connect to the CGOS server at yss-aya.com. 
 
 After configuring your cgos.config file, you can connect to CGOS with `cgosGtp -c cgos.config` and spectate your own game with `cgosView yss-aya.com 6819`
+
+
+Running unit tests
+------------------
+```python
+python -m unittest discover tests
+```

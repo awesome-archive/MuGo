@@ -56,10 +56,10 @@ def handle_node(pos, node):
     # If B/W props are not present, then there is no move. But if it is present and equal to the empty string, then the move was a pass.
     elif 'B' in props:
         black_move = pc(props.get('B', [''])[0])
-        return pos.play_move(go.BLACK, black_move)
+        return pos.play_move(black_move, color=go.BLACK)
     elif 'W' in props:
         white_move = pc(props.get('W', [''])[0])
-        return pos.play_move(go.WHITE, white_move)
+        return pos.play_move(white_move, color=go.WHITE)
     else:
         return pos
 
@@ -97,7 +97,10 @@ def replay_sgf(sgf_contents):
     game = collection.children[0]
     props = game.root.properties
     assert int(sgf_prop(props.get('GM', ['1']))) == 1, "Not a Go SGF!"
-    komi = float(sgf_prop(props.get('KM')))
+
+    komi = 0
+    if props.get('KM') != None:
+        komi = float(sgf_prop(props.get('KM')))
     metadata = GameMetadata(
         result=sgf_prop(props.get('RE')),
         handicap=int(sgf_prop(props.get('HA', [0]))),
@@ -112,3 +115,27 @@ def replay_sgf(sgf_contents):
         next_move = get_next_move(current_node)
         yield PositionWithContext(pos, next_move, metadata)
         current_node = current_node.next
+
+def replay_position(position):
+    '''
+    Wrapper for a go.Position which replays its history.
+    Assumes an empty start position! (i.e. no handicap, and history must be exhaustive.)
+
+    for position_w_context in replay_position(position):
+        print(position_w_context.position)
+    '''
+    assert position.n == len(position.recent), "Position history is incomplete"
+    metadata = GameMetadata(
+        result=position.result(),
+        handicap=0,
+        board_size=position.board.shape[0]
+    )
+    go.set_board_size(metadata.board_size)
+
+    pos = Position(komi=position.komi)
+    for player_move in position.recent:
+        color, next_move = player_move
+        yield PositionWithContext(pos, next_move, metadata)
+        pos = pos.play_move(next_move, color=color)
+    # return the original position, with unknown next move
+    yield PositionWithContext(pos, None, metadata)

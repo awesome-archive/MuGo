@@ -5,7 +5,7 @@ import os
 import struct
 import sys
 
-from features import DEFAULT_FEATURES
+from features import bulk_extract_features
 import go
 from sgf_wrapper import replay_sgf
 import utils
@@ -15,15 +15,8 @@ CHUNK_SIZE = 4096
 CHUNK_HEADER_FORMAT = "iii?"
 CHUNK_HEADER_SIZE = struct.calcsize(CHUNK_HEADER_FORMAT)
 
-def take_n(n, iterator):
-    result = []
-    try:
-        for i in range(n):
-            result.append(next(iterator))
-    except StopIteration:
-        pass
-    finally:
-        return result
+def take_n(n, iterable):
+    return list(itertools.islice(iterable, n))
 
 def iter_chunks(chunk_size, iterator):
     while True:
@@ -55,14 +48,8 @@ def get_positions_from_sgf(file):
             if position_w_context.is_usable():
                 yield position_w_context
 
-def extract_features(positions):
-    num_positions = len(positions)
-    output = np.zeros([num_positions, go.N, go.N, DEFAULT_FEATURES.planes], dtype=np.uint8)
-    for i, pos in enumerate(positions):
-        output[i] = DEFAULT_FEATURES.extract(pos)
-    return output
-
 def split_test_training(positions_w_context, est_num_positions):
+    print("Estimated number of chunks: %s" % (est_num_positions // CHUNK_SIZE), file=sys.stderr)
     desired_test_size = 10**5
     if est_num_positions < 2 * desired_test_size:
         positions_w_context = list(positions_w_context)
@@ -85,16 +72,19 @@ class DataSet(object):
         self.board_size = pos_features.shape[1]
         self.input_planes = pos_features.shape[-1]
         self._index_within_epoch = 0
+        self.shuffle()
+
+    def shuffle(self):
+        perm = np.arange(self.data_size)
+        np.random.shuffle(perm)
+        self.pos_features = self.pos_features[perm]
+        self.next_moves = self.next_moves[perm]
+        self._index_within_epoch = 0
 
     def get_batch(self, batch_size):
         assert batch_size < self.data_size
         if self._index_within_epoch + batch_size > self.data_size:
-            # Shuffle the data and start over
-            perm = np.arange(self.data_size)
-            np.random.shuffle(perm)
-            self.pos_features = self.pos_features[perm]
-            self.next_moves = self.next_moves[perm]
-            self._index_within_epoch = 0
+            self.shuffle()
         start = self._index_within_epoch
         end = start + batch_size
         self._index_within_epoch += batch_size
@@ -103,7 +93,7 @@ class DataSet(object):
     @staticmethod
     def from_positions_w_context(positions_w_context, is_test=False):
         positions, next_moves, results = zip(*positions_w_context)
-        extracted_features = extract_features(positions)
+        extracted_features = bulk_extract_features(positions)
         encoded_moves = make_onehot(next_moves)
         return DataSet(extracted_features, encoded_moves, results, is_test=is_test)
 
@@ -139,25 +129,11 @@ class DataSet(object):
 
         return DataSet(pos_features, next_moves, [], is_test=is_test)
 
-def process_raw_data(*dataset_dirs, processed_dir="processed_data"):
-    sgf_files = list(find_sgf_files(*dataset_dirs))
+def parse_data_sets(*data_sets):
+    sgf_files = list(find_sgf_files(*data_sets))
     print("%s sgfs found." % len(sgf_files), file=sys.stderr)
     est_num_positions = len(sgf_files) * 200 # about 200 moves per game
-    print("Estimated number of chunks: %s" % (est_num_positions // CHUNK_SIZE), file=sys.stderr)
     positions_w_context = itertools.chain(*map(get_positions_from_sgf, sgf_files))
 
     test_chunk, training_chunks = split_test_training(positions_w_context, est_num_positions)
-    print("Allocating %s positions as test; remainder as training" % len(test_chunk), file=sys.stderr)
-
-    print("Writing test chunk")
-    test_dataset = DataSet.from_positions_w_context(test_chunk, is_test=True)
-    test_filename = os.path.join(processed_dir, "test.chunk.gz")
-    test_dataset.write(test_filename)
-
-    training_datasets = map(DataSet.from_positions_w_context, training_chunks)
-    for i, train_dataset in enumerate(training_datasets):
-        if i % 10 == 0:
-            print("Writing training chunk %s" % i)
-        train_filename = os.path.join(processed_dir, "train%s.chunk.gz" % i)
-        train_dataset.write(train_filename)
-    print("%s chunks written" % (i+1))
+    return test_chunk, training_chunks

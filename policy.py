@@ -22,6 +22,7 @@ linear layer with a single tanh unit.
 '''
 import math
 import os
+import sys
 import tensorflow as tf
 
 import features
@@ -31,8 +32,9 @@ import utils
 EPSILON = 1e-35
 
 class PolicyNetwork(object):
-    def __init__(self, num_input_planes, k=32, num_int_conv_layers=3, use_cpu=False):
-        self.num_input_planes = num_input_planes
+    def __init__(self, features=features.DEFAULT_FEATURES, k=32, num_int_conv_layers=3, use_cpu=False):
+        self.num_input_planes = sum(f.planes for f in features)
+        self.features = features
         self.k = k
         self.num_int_conv_layers = num_int_conv_layers
         self.test_summary_writer = None
@@ -82,25 +84,21 @@ class PolicyNetwork(object):
         b_conv_final = tf.Variable(tf.constant(0, shape=[go.N ** 2], dtype=tf.float32), name="b_conv_final")
         h_conv_final = _conv2d(h_conv_intermediate[-1], W_conv_final)
 
-        # Add epsilon to avoid taking the log of 0 in following step
-        output = tf.nn.softmax(tf.reshape(h_conv_final, [-1, go.N ** 2]) + b_conv_final) + tf.constant(EPSILON)
+        logits = tf.reshape(h_conv_final, [-1, go.N ** 2]) + b_conv_final
 
-        log_likelihood_cost = -tf.reduce_mean(tf.reduce_sum(tf.mul(tf.log(output), y), reduction_indices=[1]))
+        log_likelihood_cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits, y))
 
-        # The step size was initialized to 0.003 and was halved every 80 million training steps
-        _learning_rate = tf.train.exponential_decay(3e-3, global_step,
-                                           8e7, 0.5)
-        train_step = tf.train.GradientDescentOptimizer(_learning_rate).minimize(log_likelihood_cost, global_step=global_step)
-        was_correct = tf.equal(tf.argmax(output, 1), tf.argmax(y, 1))
+        train_step = tf.train.AdamOptimizer(1e-4).minimize(log_likelihood_cost, global_step=global_step)
+        was_correct = tf.equal(tf.argmax(logits, 1), tf.argmax(y, 1))
         accuracy = tf.reduce_mean(tf.cast(was_correct, tf.float32))
 
-        weight_summaries = tf.merge_summary([
-            tf.histogram_summary(weight_var.name, weight_var)
+        weight_summaries = tf.summary.merge([
+            tf.summary.histogram(weight_var.name, weight_var)
             for weight_var in [W_conv_init] +  W_conv_intermediate + [W_conv_final, b_conv_final]],
             name="weight_summaries"
         )
-        activation_summaries = tf.merge_summary([
-            tf.histogram_summary(act_var.name, act_var)
+        activation_summaries = tf.summary.merge([
+            tf.summary.histogram(act_var.name, act_var)
             for act_var in [h_conv_init] + h_conv_intermediate + [h_conv_final]],
             name="activation_summaries"
         )
@@ -112,20 +110,21 @@ class PolicyNetwork(object):
                 setattr(self, name, thing)
 
     def initialize_logging(self, tensorboard_logdir):
-        self.test_summary_writer = tf.train.SummaryWriter(os.path.join(tensorboard_logdir, "test"), self.session.graph)
-        self.training_summary_writer = tf.train.SummaryWriter(os.path.join(tensorboard_logdir, "training"), self.session.graph)
+        self.test_summary_writer = tf.summary.FileWriter(os.path.join(tensorboard_logdir, "test"), self.session.graph)
+        self.training_summary_writer = tf.summary.FileWriter(os.path.join(tensorboard_logdir, "training"), self.session.graph)
 
     def initialize_variables(self, save_file=None):
-        if save_file is None:
-            self.session.run(tf.initialize_all_variables())
-        else:
+        self.session.run(tf.global_variables_initializer())
+        if save_file is not None:
             self.saver.restore(self.session, save_file)
 
     def get_global_step(self):
         return self.session.run(self.global_step)
 
     def save_variables(self, save_file):
-        self.saver.save(self.session, save_file)
+        if save_file is not None:
+            print("Saving checkpoint to %s" % save_file, file=sys.stderr)
+            self.saver.save(self.session, save_file)
 
     def train(self, training_data, batch_size=32):
         num_minibatches = training_data.data_size // batch_size
@@ -149,7 +148,7 @@ class PolicyNetwork(object):
 
     def run(self, position):
         'Return a sorted list of (probability, move) tuples'
-        processed_position = features.DEFAULT_FEATURES.extract(position)
+        processed_position = features.extract_features(position, features=self.features)
         probabilities = self.session.run(self.output, feed_dict={self.x: processed_position[None, :]})[0]
         return probabilities.reshape([go.N, go.N])
 
@@ -181,13 +180,14 @@ class StatisticsCollector(object):
     the python level, and then shove it through the accuracy/cost summary
     nodes to generate the appropriate summary protobufs for writing.
     '''
-    with tf.device("/cpu:0"):
+    graph = tf.Graph()
+    with tf.device("/cpu:0"), graph.as_default():
         accuracy = tf.placeholder(tf.float32, [])
         cost = tf.placeholder(tf.float32, [])
-        accuracy_summary = tf.scalar_summary("accuracy", accuracy)
-        cost_summary = tf.scalar_summary("log_likelihood_cost", cost)
-        accuracy_summaries = tf.merge_summary([accuracy_summary, cost_summary], name="accuracy_summaries")
-    session = tf.Session()
+        accuracy_summary = tf.summary.scalar("accuracy", accuracy)
+        cost_summary = tf.summary.scalar("log_likelihood_cost", cost)
+        accuracy_summaries = tf.summary.merge([accuracy_summary, cost_summary], name="accuracy_summaries")
+    session = tf.Session(graph=graph)
 
     def __init__(self):
         self.accuracies = []

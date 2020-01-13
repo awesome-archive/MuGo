@@ -64,7 +64,8 @@ def ones_feature(position):
 @planes(P)
 def recent_move_feature(position):
     onehot_features = np.zeros([go.N, go.N, P], dtype=np.uint8)
-    for i, move in enumerate(reversed(position.recent[-P:])):
+    for i, player_move in enumerate(reversed(position.recent[-P:])):
+        _, move = player_move # unpack the info from position.recent
         if move is not None:
             onehot_features[move[0], move[1], i] = 1
     return onehot_features
@@ -85,18 +86,21 @@ def would_capture_feature(position):
             features[last_lib] += len(g.stones)
     return make_onehot(features, P)
 
-class FeatureExtractor(object):
-    def __init__(self, features):
-        self.features = features
-        self.planes = sum(f.planes for f in features)
-
-    def extract(self, position):
-        return np.concatenate([feature(position) for feature in self.features], axis=2)
-
-DEFAULT_FEATURES = FeatureExtractor([
+DEFAULT_FEATURES = [
     stone_color_feature,
     ones_feature,
     liberty_feature,
     recent_move_feature,
     would_capture_feature,
-])
+]
+
+def extract_features(position, features=DEFAULT_FEATURES):
+    return np.concatenate([feature(position) for feature in features], axis=2)
+
+def bulk_extract_features(positions, features=DEFAULT_FEATURES):
+    num_positions = len(positions)
+    num_planes = sum(f.planes for f in features)
+    output = np.zeros([num_positions, go.N, go.N, num_planes], dtype=np.uint8)
+    for i, pos in enumerate(positions):
+        output[i] = extract_features(pos, features=features)
+    return output
